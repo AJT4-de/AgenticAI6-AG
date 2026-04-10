@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+output/
+*.pdf
+*.png
+*.jpg
+.idea/
+.vscode/
+assets/
+project_report.md
+codebase_tutorial.md
+.pytest_cache/
