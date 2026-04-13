@@ -10,6 +10,7 @@ Task   : Generate an image prompt from the simplified text and call
 
 from crewai import Agent, Task
 from tools.image_tool import generate_image_tool
+from config.schemas import IllustratorOutput
 
 
 def create_illustrator_agent(llm) -> Agent:
@@ -40,40 +41,29 @@ build_illustrator_agent = create_illustrator_agent
 
 def create_illustrator_task(
     agent: Agent,
-    educational_text: str,
-    target_group: str,
-    output_language: str,
-    raw_topic: str = "",
+    context: list[Task] = None,
 ) -> Task:
     """Return the illustration task."""
-    topic_hint = (
-        f"\n**Original Topic**: {raw_topic}\n"
-        if raw_topic else ""
-    )
     return Task(
         description=(
             "Your job is to generate ONE illustration for the educational "
-            "content below.\n\n"
-            f"**Educational Text**:\n---\n{educational_text}\n---\n"
-            f"{topic_hint}\n"
-            f"**Target Audience**: {target_group}\n"
-            f"**Language Context**: {output_language}\n\n"
+            "article provided in the context.\n\n"
             "### Step 1 - Write an image prompt\n"
             "Write a single descriptive sentence (in English) for a Stable "
             "Diffusion image generator. The prompt MUST:\n"
-            "- Directly relate to the topic of the educational text above.\n"
-            "- Be age-appropriate.\n"
+            "- Directly relate to the topic of the educational text.\n"
             "- Use an infographic art style: clean, modern, data-driven visual "
             "with icons, charts, or diagrams on a plain background.\n"
             "- NOT contain any text or letters in the image.\n\n"
             "### Step 2 - Call the tool\n"
-            "Call the generate_image tool. Pass the prompt as a plain string.\n"
-            'Example: generate_image(prompt="a clean modern infographic illustration of ...")\n\n'
+            "Call the generate_image tool. Pass the `{output_folder}` variable to the "
+            "tool. Example: generate_image(prompt='...', output_folder='{output_folder}')\n\n"
             "### Step 3 - Return the result\n"
-            "After the tool returns the file path, respond with ONLY:\n"
-            '{"image_prompt": "<your prompt>", "image_path": "<path from tool>"}'
+            "Respond with the prompt you wrote and the image_path returned by the tool."
         ),
-        expected_output='JSON with keys "image_prompt" and "image_path".',
+        expected_output="An IllustratorOutput containing the image_prompt and the image_path.",
+        output_pydantic=IllustratorOutput,
+        context=context,
         agent=agent,
     )
 

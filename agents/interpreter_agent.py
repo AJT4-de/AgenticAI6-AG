@@ -15,6 +15,7 @@ from config.settings import (
     DEFAULT_TARGET_GROUP,
     get_target_grade,
 )
+from config.schemas import BlueprintOutput
 
 
 def create_interpreter_agent(llm) -> Agent:
@@ -62,26 +63,11 @@ def create_interpreter_task(
             f"Target Audience : {target_group}\n"
             f"Output Language : {output_language}\n"
             f"Readability Target (Flesch-Kincaid grade): {grade_level}\n\n"
-            "Your job is to create a Strategic Blueprint as a JSON object.\n"
-            "The JSON must have these exact keys:\n"
-            '- "core_concepts": a list of 3-6 key concepts from the input\n'
-            '- "target_audience": the audience label\n'
-            '- "grade_level": the target FK grade as a number\n'
-            '- "output_language": the output language\n'
-            '- "tone": e.g. friendly, academic, playful\n'
-            '- "register": e.g. informal, formal, semi-formal\n'
-            '- "key_terms_glossary": a dict mapping important terms to simple definitions\n'
-            '- "structural_notes": notes on how the text should be organised\n\n'
-            "IMPORTANT: Your entire response must be ONLY the JSON object.\n"
-            "Do NOT include any text before or after the JSON.\n"
-            "Do NOT wrap it in markdown code fences.\n"
-            "Start your response with { and end with }."
+            "Your job is to create a Strategic Blueprint for an educational article.\n"
+            "Analyse the text and structure the core ideas appropriately for the target audience.\n"
         ),
-        expected_output=(
-            "A single JSON object with keys: core_concepts, target_audience, "
-            "grade_level, output_language, tone, register, key_terms_glossary, "
-            "structural_notes."
-        ),
+        expected_output="A structured Blueprint detailing core concepts, audience, tone, and necessary glossary terms.",
+        output_pydantic=BlueprintOutput,
         agent=agent,
     )
 

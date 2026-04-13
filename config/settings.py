@@ -25,9 +25,7 @@ HF_IMAGE_MODEL: str = os.getenv(
 DEFAULT_OUTPUT_LANGUAGE: str = os.getenv("DEFAULT_OUTPUT_LANGUAGE", "English")
 DEFAULT_TARGET_GROUP: str = os.getenv("DEFAULT_TARGET_GROUP", "University student")
 
-# ── Output directory ─────────────────────────────────────────────────────────
-OUTPUT_DIR: Path = _PROJECT_ROOT / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
+
 
 
 # ── Readability grade-level targets per audience ─────────────────────────────

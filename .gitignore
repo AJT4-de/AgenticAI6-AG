@@ -13,3 +13,4 @@ assets/
 project_report.md
 codebase_tutorial.md
 .pytest_cache/
+*.bak           

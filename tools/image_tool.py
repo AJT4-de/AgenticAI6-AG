@@ -1,18 +1,15 @@
 """
 tools/image_tool.py
 ──────────────────────────────────────────────────────────────────────
-CrewAI-compatible tool that generates a HIGH-QUALITY infographic
+CrewAI-compatible async tool that generates a HIGH-QUALITY infographic
 image via the Hugging Face Inference API (FLUX.1-dev by default)
 and saves it to the output folder.
 
 Includes:
   - Automatic prompt enhancement for better quality
   - 1024x1024 resolution with 30 inference steps
-  - Retry logic (max 3 attempts) with longer waits for large models
+  - Retry logic via tenacity with exponential backoff
   - Graceful fallback to a styled placeholder image
-
-Uses BaseTool (not @tool decorator) so we can accept flexible input
-— Llama 3 sometimes passes prompt as a dict instead of a string.
 ──────────────────────────────────────────────────────────────────────
 """
 
@@ -20,18 +17,22 @@ from __future__ import annotations
 
 import datetime
 import textwrap
-import time
+import asyncio
+from pathlib import Path
 from typing import Any, Type
 
 import requests
 from crewai.tools import BaseTool
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
-from config.settings import HF_API_TOKEN, HF_IMAGE_MODEL, OUTPUT_DIR
+from config.settings import HF_API_TOKEN, HF_IMAGE_MODEL
 
-MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 10  # FLUX models need more warm-up time
+
+class ImageToolException(Exception):
+    """Custom exception for retriable image generation errors."""
+    pass
 
 
 # ── Prompt enhancement ────────────────────────────────────────────────
@@ -61,6 +62,7 @@ def _enhance_prompt(raw_prompt: str) -> str:
 
 def _create_placeholder(
     filename: str,
+    output_folder: str,
     prompt: str = "",
     message: str = "Image generation failed",
 ) -> str:
@@ -91,20 +93,9 @@ def _create_placeholder(
         wrapped = textwrap.fill(prompt[:300], width=70)
         draw.text((40, 140), f"Prompt:\n{wrapped}", fill=(80, 80, 80), font=font_small)
 
-    # Decorative section bars
-    for i in range(5):
-        y = 350 + i * 120
-        draw.rounded_rectangle(
-            [60, y, 960, y + 90],
-            radius=10,
-            fill=(220, 225, 235),
-            outline=(180, 185, 200),
-        )
-        draw.text(
-            (80, y + 30), f"Section {i + 1}", fill=(100, 100, 120), font=font_body
-        )
-
-    path = OUTPUT_DIR / filename
+    out_dir = Path(output_folder)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
     img.save(str(path), "PNG")
     print(f"  [Image Gen] Placeholder saved: {path}")
     return str(path)
@@ -112,7 +103,13 @@ def _create_placeholder(
 
 # ── HF Inference API caller ─────────────────────────────────────────
 
-def _generate_huggingface(prompt: str, filename: str) -> str:
+@retry(
+    wait=wait_exponential(multiplier=2, min=10, max=60),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type(ImageToolException),
+    reraise=True
+)
+async def _generate_huggingface(prompt: str, filename: str, output_folder: str) -> str:
     """Call the Hugging Face Inference API with quality enhancements."""
     api_url = f"https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}"
     headers = {
@@ -131,107 +128,75 @@ def _generate_huggingface(prompt: str, filename: str) -> str:
         },
     }
 
-    last_error = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            print(f"  [Image Gen] Attempt {attempt}/{MAX_RETRIES}  model={HF_IMAGE_MODEL}")
-            print(f"  [Image Gen] Prompt: {enhanced[:120]}...")
-            resp = requests.post(
-                api_url, headers=headers, json=payload, timeout=120
-            )
+    print(f"  [Image Gen] Requesting model={HF_IMAGE_MODEL}")
+    loop = asyncio.get_running_loop()
+    
+    def _do_post():
+        return requests.post(api_url, headers=headers, json=payload, timeout=120)
 
-            if resp.status_code == 200:
-                content_type = resp.headers.get("content-type", "")
-                if "image" in content_type:
-                    import io
-                    img = Image.open(io.BytesIO(resp.content))
-                    path = OUTPUT_DIR / filename
-                    img.save(str(path), "PNG")
-                    print(
-                        f"  [Image Gen] Success — {path} "
-                        f"({path.stat().st_size:,} bytes, {img.size[0]}x{img.size[1]})"
-                    )
-                    return str(path)
-                else:
-                    last_error = f"Unexpected content-type: {content_type}"
+    try:
+        resp = await loop.run_in_executor(None, _do_post)
+    except Exception as e:
+        raise ImageToolException(f"Connection error: {e}")
 
-            elif resp.status_code == 503:
-                # Model loading — parse estimated_time if available
-                try:
-                    body = resp.json()
-                    est = body.get("estimated_time", RETRY_DELAY_SECONDS * attempt)
-                except Exception:
-                    est = RETRY_DELAY_SECONDS * attempt
-                wait = max(est, RETRY_DELAY_SECONDS)
-                last_error = f"HTTP 503: Model loading"
-                print(f"  [Image Gen] Model loading, waiting {wait:.0f}s...")
-                time.sleep(wait)
-                continue
-
-            elif resp.status_code == 429:
-                wait = RETRY_DELAY_SECONDS * attempt
-                last_error = "HTTP 429: Rate limited"
-                print(f"  [Image Gen] Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-
-            else:
-                last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
-
-        except requests.exceptions.Timeout:
-            last_error = "Request timed out"
-        except requests.exceptions.ConnectionError as e:
-            last_error = f"Connection error: {e}"
-        except Exception as e:
-            last_error = f"Unexpected error: {e}"
-
-        if attempt < MAX_RETRIES:
-            print(
-                f"  [Image Gen] Failed: {last_error}. "
-                f"Retrying in {RETRY_DELAY_SECONDS}s..."
-            )
-            time.sleep(RETRY_DELAY_SECONDS)
-
-    # All retries exhausted
-    print(f"  [Image Gen] All {MAX_RETRIES} attempts failed: {last_error}")
-    print("  [Image Gen] Falling back to placeholder image.")
-    return _create_placeholder(filename, prompt, f"Failed: {last_error}")
+    if resp.status_code == 200:
+        content_type = resp.headers.get("content-type", "")
+        if "image" in content_type:
+            import io
+            
+            def _save_image():
+                img = Image.open(io.BytesIO(resp.content))
+                out_dir = Path(output_folder)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                path = out_dir / filename
+                img.save(str(path), "PNG")
+                return str(path)
+                
+            return await loop.run_in_executor(None, _save_image)
+        else:
+            raise ValueError(f"Unexpected content-type from API: {content_type}")
+            
+    elif resp.status_code == 503:
+        raise ImageToolException("HTTP 503: Model loading")
+    elif resp.status_code == 429:
+        raise ImageToolException("HTTP 429: Rate limited")
+    else:
+        raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
 
 
 # ── CrewAI BaseTool ───────────────────────────────────────────────────
 
 class GenerateImageInput(BaseModel):
-    """Flexible input schema — accepts prompt as str or dict."""
-    prompt: Any = Field(
-        ..., description="A detailed text description of the image to generate."
-    )
+    """Strict input schema."""
+    prompt: str = Field(..., description="A detailed text description of the image to generate.")
+    output_folder: str = Field(..., description="Absolute path to the session output folder.")
 
 
 class GenerateImageTool(BaseTool):
     name: str = "generate_image"
-    description: str = (
-        "Generate a high-quality infographic image from a text prompt. "
-        "Pass the prompt argument as a plain string describing the image. "
-        "Returns the absolute file path of the saved PNG."
-    )
+    description: str = "Generate a high-quality infographic image from a text prompt."
     args_schema: Type[BaseModel] = GenerateImageInput
 
-    def _run(self, prompt: Any) -> str:
-        # Coerce dict → string (Llama 3 quirk)
-        if isinstance(prompt, dict):
-            prompt = prompt.get("description", "") or str(prompt)
-        prompt = str(prompt).strip()
+    def _run(self, prompt: str, output_folder: str) -> str:
+        raise NotImplementedError("This tool strictly uses async execution.")
+
+    async def _arun(self, prompt: str, output_folder: str) -> str:
+        prompt = prompt.strip()
         if not prompt:
-            prompt = "abstract colorful infographic illustration"
+            raise ValueError("Prompt cannot be empty.")
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"illustration_{timestamp}.png"
 
         if HF_API_TOKEN:
-            return _generate_huggingface(prompt, filename)
+            try:
+                return await _generate_huggingface(prompt, filename, output_folder)
+            except Exception as e:
+                print(f"  [Image Gen] Failed after retries: {e}")
+                return _create_placeholder(filename, output_folder, prompt, f"Failed: {e}")
         else:
             print("  [Image Gen] No HF_API_TOKEN configured — using placeholder.")
-            return _create_placeholder(filename, prompt, "No HF API token configured")
+            return _create_placeholder(filename, output_folder, prompt, "No HF API token configured")
 
 
 # Module-level instance for easy import

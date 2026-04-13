@@ -29,8 +29,7 @@ from typing import Any, Type
 from crewai.tools import BaseTool
 from fpdf import FPDF
 from pydantic import BaseModel, Field
-
-from config.settings import OUTPUT_DIR
+import asyncio
 
 
 # -- Colour palette ----------------------------------------------------
@@ -78,50 +77,7 @@ def _sanitize(text: str) -> str:
     return text
 
 
-def _coerce_str(value: Any) -> str:
-    """Coerce a value to str, handling the dict format Llama 3 sends."""
-    if isinstance(value, dict):
-        return str(value.get("description", "") or value)
-    return str(value).strip()
 
-
-def _coerce_float(value: Any) -> float:
-    """Coerce a value to float, handling the dict format Llama 3 sends."""
-    if isinstance(value, dict):
-        raw = value.get("description", 0)
-    else:
-        raw = value
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _fix_image_path(raw: str) -> str:
-    """Recover a valid image path from a possibly-mangled string.
-
-    Llama 3 often strips backslashes, turning
-      D:\\ResearchProject\\AgenticAI6\\output\\illustration_xxx.png
-    into
-      D:ResearchProjectAgenticAI6outputillustration_xxx.png
-    """
-    if not raw:
-        return ""
-    p = Path(raw)
-    if p.exists():
-        return raw
-
-    m = re.search(r'(illustration_\d{8}_\d{6}\.png)$', raw)
-    if m:
-        candidate = OUTPUT_DIR / m.group(1)
-        if candidate.exists():
-            return str(candidate)
-
-    illustrations = sorted(OUTPUT_DIR.glob("illustration_*.png"))
-    if illustrations:
-        return str(illustrations[-1])
-
-    return raw
 
 
 # -- Inline formatting regex ------------------------------------------
@@ -608,6 +564,7 @@ def _render_body(pdf: ProfessionalPDF, body_text: str) -> None:
 def build_pdf(
     title: str,
     body_text: str,
+    output_folder: str,
     image_path: str = "",
     target_group: str = "General public",
     language: str = "English",
@@ -622,7 +579,7 @@ def build_pdf(
     """
     title = _sanitize(title)
     body_text = _sanitize(body_text)
-    image_path = _fix_image_path(image_path)
+    image_path = image_path
     target_group = _sanitize(target_group)
     language = _sanitize(language)
     readability_info = _sanitize(readability_info) if readability_info else ""
@@ -686,7 +643,9 @@ def build_pdf(
     safe_name = safe_name[:100] or "report"
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{safe_name}_{timestamp}.pdf"
-    out_path = OUTPUT_DIR / filename
+    out_dir = Path(output_folder)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
     pdf.output(str(out_path))
     return str(out_path)
 
@@ -696,64 +655,60 @@ def build_pdf(
 # =====================================================================
 
 class GeneratePdfInput(BaseModel):
-    """Flexible input schema -- accepts args as str/float or dict."""
-    title: Any = Field(..., description="Report title.")
-    body_text: Any = Field(..., description="The full educational text.")
-    image_path: Any = Field(..., description="Path to the illustration.")
-    target_group: Any = Field(..., description="Intended audience label.")
-    language: Any = Field(..., description="Language of the report.")
-    accessibility_score: Any = Field(..., description="FK readability score.")
+    """Strict input schema."""
+    title: str = Field(..., description="Report title.")
+    body_text: str = Field(..., description="The full educational text.")
+    output_folder: str = Field(..., description="Absolute path to the session output folder.")
+    image_path: str = Field(..., description="Path to the illustration.")
+    target_group: str = Field(..., description="Intended audience label.")
+    language: str = Field(..., description="Language of the report.")
+    accessibility_score: float = Field(..., description="FK readability score.")
 
 
 class GeneratePdfTool(BaseTool):
     name: str = "generate_pdf"
     description: str = (
         "Assemble text and an image into a professional PDF report. "
-        "Pass all arguments as plain strings (not dicts). "
         "Returns the absolute file path of the generated PDF."
     )
     args_schema: Type[BaseModel] = GeneratePdfInput
 
-    def _run(
-        self,
-        title: Any,
-        body_text: Any,
-        image_path: Any,
-        target_group: Any,
-        language: Any,
-        accessibility_score: Any,
-    ) -> str:
-        # Coerce all inputs (handles Llama 3 dict format)
-        title = _coerce_str(title)
-        body_text = _coerce_str(body_text)
-        image_path = _fix_image_path(_coerce_str(image_path))
-        target_group = _coerce_str(target_group)
-        language = _coerce_str(language)
-        accessibility_score = _coerce_float(accessibility_score)
+    def _run(self, *args, **kwargs) -> str:
+        raise NotImplementedError("This tool strictly uses async execution.")
 
+    async def _arun(
+        self,
+        title: str,
+        body_text: str,
+        output_folder: str,
+        image_path: str,
+        target_group: str,
+        language: str,
+        accessibility_score: float,
+    ) -> str:
         # Guard: reject placeholder / empty body text
         clean_check = body_text.strip().strip('.')
         if len(clean_check) < 200:
-            safe_chk = re.sub(r'[<>:"/\\|?*]', '_', title).strip().strip('.')
-            safe_chk = safe_chk[:100] or "report"
-            matches = sorted(OUTPUT_DIR.glob(f"{safe_chk}_*.pdf"))
-            if matches:
-                return str(matches[-1])
-            return (
+            raise ValueError(
                 "ERROR: body_text is too short or is a placeholder. "
-                "You must pass the FULL educational text, not a reference "
-                "like '(full educational text provided above)'. "
-                "Copy the entire text into the body_text argument."
+                "You must pass the FULL educational text! "
+                "Do not summarize or use placeholders."
             )
 
-        return build_pdf(
-            title=title,
-            body_text=body_text,
-            image_path=image_path,
-            target_group=target_group,
-            language=language,
-            accessibility_score=accessibility_score,
-        )
+        loop = asyncio.get_running_loop()
+        
+        def _execute_pdf():
+            return build_pdf(
+                title=title,
+                body_text=body_text,
+                output_folder=output_folder,
+                image_path=image_path,
+                target_group=target_group,
+                language=language,
+                accessibility_score=accessibility_score,
+            )
+
+        return await loop.run_in_executor(None, _execute_pdf)
 
 
 # Module-level instance for easy import

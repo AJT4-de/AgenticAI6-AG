@@ -10,6 +10,7 @@ Task   : Combine the educational text and generated image into a
 
 from crewai import Agent, Task
 from tools.pdf_tool import generate_pdf_tool
+from config.schemas import PublisherOutput
 
 
 def create_publisher_agent(llm) -> Agent:
@@ -40,40 +41,21 @@ build_publisher_agent = create_publisher_agent
 
 def create_publisher_task(
     agent: Agent,
-    educational_text: str,
-    image_path: str,
-    target_group: str,
-    output_language: str,
-    accessibility_score: float,
-    topic_title: str = "Report",
-    readability_info: str = "",
+    context: list[Task] = None,
 ) -> Task:
     """Return the PDF-assembly task."""
     return Task(
         description=(
             "Create a PDF report using the generate_pdf tool.\n\n"
-            "You MUST call the generate_pdf tool with these EXACT arguments:\n"
-            f"- title: \"{topic_title}\"\n"
-            f"- body_text: the COMPLETE educational text between the "
-            f"---START--- and ---END--- markers below\n"
-            f"- image_path: \"{image_path}\"\n"
-            f"- target_group: \"{target_group}\"\n"
-            f"- language: \"{output_language}\"\n"
-            f"- accessibility_score: {accessibility_score}\n\n"
-            "---START---\n"
-            f"{educational_text}\n"
-            "---END---\n\n"
-            "After the tool returns the PDF path, respond with ONLY:\n"
-            '{"pdf_path": "<path returned by tool>"}\n\n'
-            "CRITICAL RULES:\n"
-            "1. Copy the ENTIRE text between ---START--- and ---END--- "
-            "into the body_text argument.\n"
-            "2. Do NOT summarise, shorten, or paraphrase the text.\n"
-            "3. Do NOT use placeholders like '(full text above)'.\n"
-            "4. The body_text must contain ALL headings, paragraphs, "
-            "and formatting from the original."
+            "You MUST call the generate_pdf tool by pulling the exact information "
+            "from your context (which contains the article markdown, image path, "
+            "and blueprint data).\n"
+            "Pass the `{output_folder}` variable as the output_folder parameter.\n"
+            "After the tool returns the PDF path, respond with the pdf_path."
         ),
-        expected_output='JSON with key "pdf_path".',
+        expected_output="A PublisherOutput containing the final pdf_path.",
+        output_pydantic=PublisherOutput,
+        context=context,
         agent=agent,
     )
 
